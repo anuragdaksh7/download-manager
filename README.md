@@ -50,3 +50,53 @@ ctest --preset debug
 ```
 
 Use `--preset release` for an optimized build.
+
+## Usage
+
+```sh
+concurrent-downloader <URL> <OUTPUT> [CONNECTIONS]
+```
+
+`CONNECTIONS` defaults to 4. The server must support HTTP `Range` requests.
+
+## Tests
+
+`ctest` runs unit tests for chunk splitting and end-to-end downloads against an in-process HTTP server
+on `127.0.0.1` (`tests/range_server.hpp`). The server can be told to drop `Accept-Ranges`, ignore
+`Range`, fail `HEAD` or hold responses open, which covers the range probe, error cleanup and that
+chunks really download in parallel. No network access is needed apart from fetching googletest.
+
+## Benchmark against a browser
+
+`bench/benchmark.py` downloads the same URL with `concurrent-downloader` at several connection counts
+and with a headless browser (Playwright), checks every copy has the same SHA-256, and prints a
+Markdown table of median time and throughput.
+
+One-time setup (PowerShell):
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r bench/requirements.txt
+.\.venv\Scripts\python -m playwright install chromium
+```
+
+Build a Release binary, then run:
+
+```powershell
+cmake --build build/vs --config Release
+.\.venv\Scripts\python bench\benchmark.py https://proof.ovh.net/files/100Mb.dat --runs 3 --connections 1 4 8
+```
+
+The script uses the first binary it finds in `build/vs/Release`, `build/release`, `build`, then
+`build/debug`; pass `--exe` to choose another. `--channel chrome` (or `msedge`) uses your installed
+browser instead of Playwright's Chromium, and `--no-browser` skips the browser.
+
+Notes for meaningful numbers:
+
+- Use a file of 100 MB or more; for small files connection setup dominates.
+- Parallel connections only help when a single connection is slower than your link, e.g. distant or
+  per-connection-throttled servers. On a nearby fast server all methods converge.
+- Browsers download over a single connection by default (Chrome's `chrome://flags/#enable-parallel-downloading`
+  is off), so the browser row is comparable to `concurrent-downloader x1` plus browser overhead.
+- Runs are interleaved and the method order rotates each run, but network conditions still vary; use
+  `--runs 5` or more before drawing conclusions.

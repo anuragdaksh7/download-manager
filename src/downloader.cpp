@@ -111,7 +111,7 @@ static size_t headerCallback(char*buffer, size_t size, size_t nitems, void* user
     std::string header(buffer, total);
 
     auto colon = header.find(':');
-    if (colon != std::string::npos) {
+    if (colon == std::string::npos) {
         return total;
     }
 
