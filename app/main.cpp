@@ -8,7 +8,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    downloader::Downloader dl;
-    dl.download(argv[1], argv[2]);
+    try
+    {
+        downloader::Downloader dl;
+        dl.download(argv[1], argv[2]);
+    }
+    catch(const std::exception& e)
+    {
+        std::cerr << "Exception: " << e.what() << '\n';
+        return 1;
+    }
+    
     return 0;
 }
