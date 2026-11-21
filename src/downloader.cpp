@@ -6,6 +6,8 @@
 #include <cctype>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <atomic>
 
 namespace downloader {
 
@@ -219,21 +221,16 @@ void Downloader::download(const std::string& url, const std::filesystem::path& o
         throw std::runtime_error("Server does not support range requests");
     }
 
+    std::cout << "File size: "
+            << metadata.size << " bytes\n";
+
     auto chunks = createChunks(metadata.size);
 
-    // Start with a clean output file.
-    std::ofstream file(output, std::ios::binary | std::ios::trunc);
+    std::cout << "Connections: "
+              << chunks.size() << '\n';
 
-    if (!file.is_open()) {
-        throw std::runtime_error("Cannot create output file");
-    }
-
-    file.close();
-
-    for (const auto& chunk : chunks) {
-        if (!downloadChunk(url, chunk, output)) {
-            throw std::runtime_error("Chunk download failed");
-        }
+    if (!downloadChunks(url, chunks, output)) {
+        throw std::runtime_error("Download failed");
     }
 
     std::cout << "Download completed: "
@@ -268,6 +265,144 @@ std::vector<DownloadChunk> Downloader::createChunks(std::uint64_t fileSize) cons
     return chunks;
 }
 
+bool Downloader::downloadChunks(
+    const std::string& url,
+    const std::vector<DownloadChunk>& chunks,
+    const std::filesystem::path& output
+) {
+    if (chunks.empty()) {
+        return true;
+    }
+
+    const std::size_t workerCount = (std::min)(
+        options_.connections,
+        static_cast<std::size_t>(chunks.size())
+    );
+
+    if (workerCount == 0) {
+        return false;
+    }
+
+    std::atomic<std::size_t> nextChunkIndex(0);
+    std::atomic<bool> success(true);
+
+    std::vector<std::thread> workers;
+
+    for (std::size_t i = 0; i< workerCount; ++i) {
+        workers.emplace_back([&](){
+            while (success.load()) {
+                const std::size_t index = nextChunkIndex.fetch_add(1);
+
+                if (index >= chunks.size()) {
+                    break;
+                }
+                
+                try {
+                    if (!downloadChunk(url, chunks[index], output)) {
+                        success.store(false);
+                        break;
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Worker exception: "
+                              << e.what() << '\n';
+
+                    success.store(false);
+                    break;
+                }
+            }
+        });
+    }
+
+    for (auto& worker : workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+    
+    if (!success.load()) {
+        for (const auto& chunk : chunks) {
+            auto tempPath = output;
+            tempPath += ".part." + std::to_string(chunk.start);
+
+            std::error_code ec;
+            std::filesystem::remove(tempPath, ec);
+        }
+
+        return false;
+    }
+    std::cout << "All chunks downloaded. Merging...\n";
+
+    std::ofstream destination(
+        output,
+        std::ios::binary | std::ios::trunc
+    );
+
+    if (!destination.is_open()) {
+        return false;
+    }
+
+    char buffer[64 * 1024];
+
+    for (const auto& chunk : chunks) {
+        auto tempPath = output;
+        tempPath += ".part." + std::to_string(chunk.start);
+
+        std::ifstream source(tempPath, std::ios::binary);
+
+        if (!source.is_open()) {
+            destination.close();
+            return false;
+        }
+
+        std::uint64_t remaining =
+            chunk.end - chunk.start + 1;
+        
+        while (remaining > 0) {
+            const auto toRead = static_cast<std::streamsize>(
+                std::min<std::uint64_t>(
+                    remaining,
+                    sizeof(buffer)
+                )
+            );
+
+            source.read(buffer, toRead);
+
+            const auto bytesRead = source.gcount();
+
+            if (bytesRead != toRead) {
+                source.close();
+                destination.close();
+                return false;
+            }
+
+            destination.write(buffer, bytesRead);
+
+            if (!destination) {
+                source.close();
+                destination.close();
+                return false;
+            }
+
+            remaining -= static_cast<std::uint64_t>(bytesRead);
+        }
+
+        source.close();
+
+        std::error_code ec;
+        std::filesystem::remove(tempPath, ec);
+    }
+
+    destination.close();
+
+    if (!destination) {
+        return false;
+    }
+
+    std::cout << "File assembled successfully.\n";
+
+    return true;
+}
+
 bool Downloader::downloadChunk(
     const std::string& url,
     const DownloadChunk& chunk,
@@ -283,27 +418,37 @@ bool Downloader::downloadChunk(
     const auto expectedSize = chunk.end - chunk.start + 1;
 
     auto tempPath = output;
-    tempPath += ".part" + std::to_string(chunk.start);
+    tempPath += ".part." + std::to_string(chunk.start);
 
     ChunkContext ctx;
-    ctx.file.open(tempPath, std::ios::binary);
+    ctx.file.open(tempPath, std::ios::binary | std::ios::trunc);
 
-    if (!ctx.file) {
+    if (!ctx.file.is_open()) {
         curl_easy_cleanup(curl);
         std::cerr << "Failed to create temporary chunk file\n";
         return false;
     }
 
-    const std::string range = std::to_string(chunk.start) + "-" + std::to_string(chunk.end);
+    const std::string range =
+        std::to_string(chunk.start) + "-" +
+        std::to_string(chunk.end);
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
 
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, chunkWriteCallback);
+    curl_easy_setopt(
+        curl,
+        CURLOPT_WRITEFUNCTION,
+        chunkWriteCallback
+    );
 
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
 
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, chunkHeaderCallback);
+    curl_easy_setopt(
+        curl,
+        CURLOPT_HEADERFUNCTION,
+        chunkHeaderCallback
+    );
 
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
 
@@ -313,88 +458,37 @@ bool Downloader::downloadChunk(
 
     long status = 0;
 
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_getinfo(
+        curl,
+        CURLINFO_RESPONSE_CODE,
+        &status
+    );
 
     curl_easy_cleanup(curl);
 
     ctx.file.close();
 
+    // Validate the HTTP response.
     if (result != CURLE_OK ||
         status != 206 ||
         ctx.received != expectedSize ||
         !validateContentRange(ctx.contentRange, chunk)) {
 
-        std::cerr << "Chunk download failed: " << range << '\n';
+        std::cerr << "Chunk download failed: " << range;
 
-        std::filesystem::remove(tempPath);
-        return false;
-    }
-
-    std::fstream destination(
-        output,
-        std::ios::in | std::ios::out | std::ios::binary
-    );
-
-    if (!destination.is_open()) {
-        std::ofstream create(output, std::ios::binary);
-
-        if (!create.is_open()) {
-            std::filesystem::remove(tempPath);
-            return false;
+        if (result != CURLE_OK) {
+            std::cerr << " | " << curl_easy_strerror(result);
         }
 
-        create.close();
+        std::cerr << " | HTTP status: " << status << '\n';
 
-        destination.open(
-            output,
-            std::ios::binary | std::ios::in | std::ios::out
-        );
-    }
-
-    if (!destination.is_open()) {
         std::filesystem::remove(tempPath);
+
         return false;
     }
 
-    destination.seekp(static_cast<std::streamoff>(chunk.start));
-
-    std::ifstream source(tempPath, std::ios::binary);
-
-    if (!source.is_open() || !destination) {
-        destination.close();
-        std::filesystem::remove(tempPath);
-        return false;
-    }
-
-    char buffer[64 * 1024];
-
-    while (source) {
-        source.read(buffer, sizeof(buffer));
-        
-        const auto bytesRead = source.gcount();
-
-        if (bytesRead > 0) {
-            destination.write(buffer, bytesRead);
-        }
-
-        if (!destination) {
-            break;
-        }
-    }
-
-    const bool success = source.eof() && destination.good();
-
-    source.close();
-    destination.close();
-
-    std::filesystem::remove(tempPath);
-
-    if (!success) {
-        std::cerr << "Failed to write chunk to destination\n";
-        return false;
-    }
-
-    std::cout << "Downloaded chunk: " << range << '\n';
+    std::cout << "Downloaded chunk: " << range
+              << " (" << ctx.received << " bytes)\n";
 
     return true;
 }

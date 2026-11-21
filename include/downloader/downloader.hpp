@@ -38,6 +38,8 @@ public:
 
     bool downloadChunk(const std::string& url, const DownloadChunk& chunk, const std::filesystem::path& output);
 
+    bool downloadChunks(const std::string& url, const std::vector<DownloadChunk>& chunks, const std::filesystem::path& output);
+
 private:
     Options options_;
 
