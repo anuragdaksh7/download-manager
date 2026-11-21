@@ -1,7 +1,6 @@
 #include "downloader/downloader.hpp"
 #include "range_server.hpp"
 
-#include <curl/curl.h>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -19,14 +18,6 @@ using test_support::RangeServer;
 using test_support::ServerBehaviour;
 
 namespace {
-
-class CurlEnvironment : public ::testing::Environment {
-public:
-    void SetUp() override { curl_global_init(CURL_GLOBAL_DEFAULT); }
-    void TearDown() override { curl_global_cleanup(); }
-};
-
-[[maybe_unused]] auto* const curlEnvironment = ::testing::AddGlobalTestEnvironment(new CurlEnvironment);
 
 std::string randomBytes(std::size_t size) {
     std::mt19937 rng(42);
@@ -131,6 +122,21 @@ TEST_F(DownloadTest, FetchMetadataThrowsOnHttpError) {
     EXPECT_THROW(Downloader().fetchMetadata(server.url()), std::runtime_error);
 }
 
+TEST_F(DownloadTest, FetchMetadataThrowsWithoutContentLength) {
+    RangeServer server("data", {.omitContentLength = true});
+    EXPECT_THROW(Downloader().fetchMetadata(server.url()), std::runtime_error);
+}
+
+TEST_F(DownloadTest, DownloadsEmptyFile) {
+    RangeServer server("");
+
+    Downloader().download(server.url(), output);
+
+    ASSERT_TRUE(fs::exists(output));
+    EXPECT_EQ(fs::file_size(output), 0u);
+    EXPECT_EQ(server.rangeRequests(), 0);
+}
+
 TEST_F(DownloadTest, DownloadsIdenticalFile) {
     const auto body = randomBytes(1 << 20);
     RangeServer server(body);
@@ -172,6 +178,15 @@ TEST_F(DownloadTest, FetchesChunksInParallel) {
 TEST_F(DownloadTest, ProbesRangeSupportWhenNotAdvertised) {
     const auto body = randomBytes(10'000);
     RangeServer server(body, {.advertiseRanges = false});
+
+    Downloader().download(server.url(), output);
+
+    EXPECT_EQ(readFile(output), body);
+}
+
+TEST_F(DownloadTest, ProbeAcceptsLowercaseHeaders) {
+    const auto body = randomBytes(10'000);
+    RangeServer server(body, {.advertiseRanges = false, .lowercaseHeaders = true});
 
     Downloader().download(server.url(), output);
 

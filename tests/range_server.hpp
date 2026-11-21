@@ -45,6 +45,8 @@ struct ServerBehaviour {
     bool honourRanges = true;     // answer Range requests with 206 instead of the full body
     int headStatus = 200;
     std::chrono::milliseconds rangeDelay{0};  // hold each 206 response open this long
+    bool omitContentLength = false;           // leave Content-Length off HEAD responses
+    bool lowercaseHeaders = false;            // send header names in lowercase, as HTTP/2 does
 };
 
 // Minimal HTTP/1.1 server on 127.0.0.1 serving one in-memory file, one thread per connection.
@@ -163,11 +165,18 @@ private:
         return true;
     }
 
-    static void respond(Socket s, int status, std::string_view reason, const std::string& extraHeaders,
-                        std::string_view payload, bool includeBody) {
-        std::string head = "HTTP/1.1 " + std::to_string(status) + " " + std::string(reason) + "\r\n" +
-                           "Content-Length: " + std::to_string(payload.size()) + "\r\n" +
-                           "Connection: close\r\n" + extraHeaders + "\r\n";
+    void respond(Socket s, int status, std::string_view reason, const std::string& extraHeaders,
+                 std::string_view payload, bool includeBody) const {
+        std::string headers = "Connection: close\r\n" + extraHeaders;
+        if (includeBody || !behaviour_.omitContentLength) {
+            headers += "Content-Length: " + std::to_string(payload.size()) + "\r\n";
+        }
+        if (behaviour_.lowercaseHeaders) {
+            std::transform(headers.begin(), headers.end(), headers.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        }
+        const std::string head =
+            "HTTP/1.1 " + std::to_string(status) + " " + std::string(reason) + "\r\n" + headers + "\r\n";
         if (sendAll(s, head) && includeBody) {
             sendAll(s, payload);
         }

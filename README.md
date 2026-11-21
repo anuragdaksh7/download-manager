@@ -57,7 +57,8 @@ Use `--preset release` for an optimized build.
 concurrent-downloader <URL> <OUTPUT> [CONNECTIONS]
 ```
 
-`CONNECTIONS` defaults to 4. The server must support HTTP `Range` requests.
+`CONNECTIONS` is 1 to 64 and defaults to 4. The server must report the file size and support HTTP
+`Range` requests.
 
 ## Tests
 

@@ -11,7 +11,31 @@
 
 namespace downloader {
 
-Downloader::Downloader(Options options) : options_(options) {}
+namespace {
+
+struct CurlGlobal {
+    CURLcode code;
+    CurlGlobal() : code(curl_global_init(CURL_GLOBAL_DEFAULT)) {}
+    ~CurlGlobal() {
+        if (code == CURLE_OK) {
+            curl_global_cleanup();
+        }
+    }
+};
+
+void ensureCurlInitialized() {
+    static const CurlGlobal global;
+
+    if (global.code != CURLE_OK) {
+        throw std::runtime_error(std::string("curl_global_init failed: ") + curl_easy_strerror(global.code));
+    }
+}
+
+}  // namespace
+
+Downloader::Downloader(Options options) : options_(options) {
+    ensureCurlInitialized();
+}
 
 std::size_t Downloader::connections() const noexcept { return options_.connections; }
 
@@ -161,10 +185,17 @@ static size_t contentRangeCallback(char* buffer, size_t size, size_t nitems, voi
 
     std::string header(buffer, total);
 
-    if (header.size() >= 14 &&
-        header.substr(0, 14) == "Content-Range:") {
-        *contentRange = header.substr(14);
+    const auto colon = header.find(':');
 
+    if (colon != std::string::npos) {
+        std::string key = header.substr(0, colon);
+
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (key == "content-range") {
+            *contentRange = header.substr(colon + 1);
+        }
     }
 
     return total;
@@ -212,6 +243,17 @@ static bool probeRangeSupport(const std::string& url) {
 
 void Downloader::download(const std::string& url, const std::filesystem::path& output) {
     auto metadata = fetchMetadata(url);
+
+    if (metadata.size == 0) {
+        std::ofstream file(output, std::ios::binary | std::ios::trunc);
+
+        if (!file) {
+            throw std::runtime_error("Failed to create output file");
+        }
+
+        std::cout << "Download completed: " << output.string() << " (empty file)\n";
+        return;
+    }
 
     if (!metadata.supportsRanges) {
         metadata.supportsRanges = probeRangeSupport(url);
@@ -493,18 +535,6 @@ bool Downloader::downloadChunk(
     return true;
 }
 
-void Downloader::testCurl() {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-
-    CURL* curl = curl_easy_init();
-
-    if (curl) {
-        curl_easy_cleanup(curl);
-    }
-
-    curl_global_cleanup();
-}
-
 FileMetadata Downloader::fetchMetadata(const std::string& url) {
     FileMetadata metadata;
 
@@ -544,9 +574,11 @@ FileMetadata Downloader::fetchMetadata(const std::string& url) {
         throw std::runtime_error("HEAD request failed with HTTP status " + std::to_string(status));
     }
 
-    if (fileSize >= 0) {
-        metadata.size = static_cast<std::uint64_t>(fileSize);
+    if (fileSize < 0) {
+        throw std::runtime_error("Server did not report the file size");
     }
+
+    metadata.size = static_cast<std::uint64_t>(fileSize);
 
     return metadata;
 }

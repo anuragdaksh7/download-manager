@@ -42,8 +42,6 @@ public:
 
 private:
     Options options_;
-
-    void testCurl();
 };
 
 }  // namespace downloader
