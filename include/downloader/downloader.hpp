@@ -36,6 +36,7 @@ public:
 
     std::vector<DownloadChunk> createChunks(std::uint64_t fileSize) const;
 
+    bool downloadChunk(const std::string& url, const DownloadChunk& chunk, const std::filesystem::path& output);
 
 private:
     Options options_;
