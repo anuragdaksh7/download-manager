@@ -477,6 +477,7 @@ bool Downloader::downloadChunk(
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 512L * 1024);
 
     curl_easy_setopt(
         curl,

@@ -85,7 +85,7 @@ Build a Release binary, then run:
 
 ```powershell
 cmake --build build/vs --config Release
-.\.venv\Scripts\python bench\benchmark.py https://proof.ovh.net/files/100Mb.dat --runs 3 --connections 1 4 8
+.\.venv\Scripts\python bench\benchmark.py https://testfile.to/dl/100mb --runs 3 --connections 1 4 8
 ```
 
 The script uses the first binary it finds in `build/vs/Release`, `build/release`, `build`, then
@@ -95,6 +95,8 @@ browser instead of Playwright's Chromium, and `--no-browser` skips the browser.
 Notes for meaningful numbers:
 
 - Use a file of 100 MB or more; for small files connection setup dominates.
+- Some test servers cap connections per IP and answer extra ones with `429 Too Many Requests`
+  (e.g. `proof.ovh.net` allows about 3), which fails the download.
 - Parallel connections only help when a single connection is slower than your link, e.g. distant or
   per-connection-throttled servers. On a nearby fast server all methods converge.
 - Browsers download over a single connection by default (Chrome's `chrome://flags/#enable-parallel-downloading`
